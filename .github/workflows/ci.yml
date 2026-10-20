@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --release
+      - name: Build the shareable program (no console window)
+        run: cargo build --release --features hide-console
+      - name: Keep the program
+        uses: actions/upload-artifact@v4
+        with:
+          name: parquet-viewer-windows
+          path: target/release/parquet-viewer.exe
