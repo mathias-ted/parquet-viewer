@@ -1,6 +1,6 @@
 [package]
 name = "parquet-viewer"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Fast viewer and search tool for large Parquet files"
 license = "MIT"

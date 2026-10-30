@@ -1,8 +1,11 @@
-# Parquet Viewer 0.1.0
-
-First release.
+# Parquet Viewer 0.1.1
 
 A fast desktop viewer and search tool for very large Parquet files, or whole folders of them.
+
+## What's new since 0.1.0
+
+- **New interface.** A dark theme, the active search shown as a chip, column types in the table headings, a **Columns** window to hide columns from the table, a progress card with Cancel for long tasks, and clear messages for errors and limits.
+- **Export a whole file.** With no search active, **Export** writes the entire file as CSV, TXT or JSON, so it also converts Parquet to other formats.
 
 ## Download
 
@@ -19,7 +22,6 @@ A fast desktop viewer and search tool for very large Parquet files, or whole fol
 - **SQL.** Query the open file or folder as a table named `data`. Memory use is capped, so a heavy query ends with a message instead of crashing the program.
 - **Open with / default app (Windows).** The **Default app...** button adds the program to the Open with list for `.parquet` and `.pq` files and opens the Windows settings, where it can be chosen as the default.
 - **Export and convert.** CSV, TXT (colon-separated) or JSON, with the selected columns. With no search active the whole file is written, so it also converts Parquet to other formats. Search, sort and SQL results export in full, with no row limit.
-- **Interface.** A dark theme, the active search shown as a chip, column types in the table headings, a **Columns** window to hide columns from the table, a progress card with Cancel for long tasks, and clear messages for errors and limits.
 - **Long tasks.** Progress bar and Cancel for searches, index builds, sorting and exports. Index builds check free memory first.
 - **Crash log.** If the program stops unexpectedly it writes `parquet-viewer-crash.log` to the temporary folder.
 
