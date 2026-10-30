@@ -9,14 +9,15 @@ One native program that runs locally and needs no installer and no runtime.
 
 - **Instant open.** Only the file footers are read, so even a folder with hundreds of millions of rows opens in well under a second.
 - **Folders as one table.** Browse, search, sort, export and query many files together. Subfolders are included.
-- **Fast search.** Contains, exact match and numeric ranges. Results stream in as they are found, and any search can be cancelled.
+- **Fast search.** Contains, equals and numeric ranges. Results stream in as they are found, and any search can be cancelled. The search on screen appears as a chip that clears it with one click.
 - **Reads only what it needs.** Column projection, row-group min/max statistics, bloom filters and a dictionary fast path skip as much data as the file allows.
 - **Optional indexes.** A trigram text index and an exact-value index, built once and reused. Exact lookups on an indexed column take milliseconds.
 - **Sorting.** Sort any column by its heading. After a search it sorts the search results, and it stops early using the file's own statistics when it can.
+- **Table view.** Each column heading shows the column type. **Columns** hides columns from the table; hidden columns are still searched and exported.
 - **Schema window.** Columns with their types, compression, encodings and value ranges, plus file and row-group sizes.
 - **SQL.** Query the open file or folder as a table named `data` (DataFusion). Memory use is capped, so a heavy query fails with a message instead of crashing the program.
 - **Double-click to open (Windows).** The **Default app...** button adds the program to the Open with list for `.parquet` and `.pq` files and opens the Windows settings where it can be chosen as the default.
-- **Export.** CSV, TXT or JSON, with the selected columns. Search, sort and SQL results export in full, with no row limit.
+- **Export and convert.** CSV, TXT or JSON, with the selected columns. With no search active the whole file is written, so it also converts Parquet to other formats. Search, sort and SQL results export in full, with no row limit.
 - **Safe on big data.** Long tasks show progress and can be cancelled. Index builds check free memory first.
 
 ## Install
@@ -42,12 +43,12 @@ If one differs, the folder is not opened and the message names the file. Values 
 
 ### Searching
 
-Pick a column, or leave **All columns**, then type and press Enter.
+Pick a column, or leave **All columns**, choose **Contains** or **Equals**, then type and press Enter or **Search**. The search stays on screen as a chip; the **x** on the chip clears it.
 
 | Input | Matches |
 |---|---|
 | text | rows containing the text, ignoring case |
-| text with **equals** ticked | values equal to the text, case-sensitive |
+| text with **Equals** selected | values equal to the text, case-sensitive |
 | `>5`, `>=5`, `<10`, `<=10`, `5..10` | numeric ranges, on number columns |
 
 ### Sorting
@@ -70,7 +71,7 @@ Grouping or sorting an entire huge table can still be slow and use a lot of memo
 
 ### Export
 
-Choose a format and the columns to include.
+Choose a format and the columns to include. With a search, sort or SQL result on screen, those rows are written. With nothing active, **Export** writes the whole file, which converts it to the chosen format. The file is written in batches, so memory use stays small however large the data is.
 
 | Format | Notes |
 |---|---|
@@ -85,7 +86,7 @@ Searching works without indexes. They make repeated searches faster.
 | Index | Speeds up | Memory |
 |---|---|---|
 | Text index | contains-search on text, when the word is uncommon | 32 KB per row group per text column |
-| Exact index (selected column) | **equals** lookups, nearly instant | about 16 bytes per row, held in memory while in use |
+| Exact index (selected column) | **Equals** lookups, nearly instant | about 16 bytes per row, held in memory while in use |
 
 Indexes are saved in the system temporary folder and reused. If free memory is too low, the program says so instead of building them.
 
@@ -141,8 +142,10 @@ src/
     job.rs          progress and cancel for long tasks
   ui/
     app.rs          the window (egui)
+    theme.rs        colours, spacing and the bundled font
+    widgets.rs      filter chip, message box, progress card, scrollbar
     assoc.rs        Open with / default app registration (Windows)
-assets/           icon
+assets/           icon, fonts (DM Sans)
 ```
 
 ## Contributing
@@ -153,3 +156,5 @@ Commit `Cargo.lock`, since this is a program and not a library.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+The bundled DM Sans font is licensed under the SIL Open Font License; see `assets/fonts/OFL.txt`.

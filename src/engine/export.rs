@@ -175,6 +175,38 @@ fn export_ids_inner(t: &Table, ids: &[u64], path: &std::path::Path, fmt: ExportF
     Ok(n)
 }
 
+/// Exports every row of the open file or folder (no search needed). Rows are streamed batch by batch,
+/// so memory stays bounded however large the data is. Progress counts row groups; Cancel is honoured
+/// between batches. On any failure or cancel, the partly written file is deleted.
+pub(crate) fn export_all(t: &Table, path: &std::path::Path, fmt: ExportFmt, cols: &[usize], job: &Job) -> Res<usize> {
+    let r = export_all_inner(t, path, fmt, cols, job);
+    if r.is_err() { let _ = std::fs::remove_file(path); }
+    r
+}
+
+fn export_all_inner(t: &Table, path: &std::path::Path, fmt: ExportFmt, cols: &[usize], job: &Job) -> Res<usize> {
+    let names: Vec<String> = cols.iter().map(|&i| t.names[i].clone()).collect();
+    let mut s = Sink::new(BufWriter::with_capacity(1 << 20, File::create(path)?), fmt, &names)?;
+    let opts = FormatOptions::default().with_null("");
+    let mut n = 0usize;
+    job.total.store(t.num_rgs().max(1), Relaxed);
+    for g in 0..t.num_rgs() {
+        for batch in reader_for(t, g, cols)? {
+            if job.cancelled() { return Err("cancelled".into()); }
+            let batch = batch?;
+            let f: Vec<_> = batch.columns().iter().map(|c| ArrayFormatter::try_new(c.as_ref(), &opts)).collect::<Result<_, _>>()?;
+            for i in 0..batch.num_rows() {
+                let cells: Vec<String> = f.iter().map(|x| x.value(i).to_string()).collect();
+                s.line(&format_row(fmt, &names, &cells))?;
+                n += 1;
+            }
+        }
+        job.tick(); // one row group finished
+    }
+    s.finish()?;
+    Ok(n)
+}
+
 /// SQL results: the rows shown (at most SQL_MAX_ROWS are kept in memory).
 pub(crate) fn export_sql(r: &SqlResult, path: &std::path::Path, fmt: ExportFmt, cols: &[usize]) -> Res<usize> {
     let names: Vec<String> = cols.iter().map(|&i| r.cols[i].clone()).collect();

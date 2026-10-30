@@ -1,5 +1,10 @@
 //! The egui application: state, toolbar, table, panels.
 use crate::prelude::*;
+use super::theme::{ACCENT, LINE, MUTED, ON_ACCENT, PANEL};
+use super::widgets;
+
+const ROW_H: f32 = 24.0; // table row height; the scroll maths in the side panel uses it too
+const HEAD_H: f32 = 38.0; // header: column name over its type
 
 #[derive(Default)]
 struct App {
@@ -45,13 +50,16 @@ struct App {
     exp_sel: Vec<bool>,
     sort_state: Option<(usize, bool)>, // (column, descending) of the active header sort
     base: Option<Arc<Vec<u64>>>,       // search results being sorted (None = whole data)
+    hidden: Vec<bool>, // columns hidden from the table view (still searched and exportable)
+    cols_open: bool,
+    applied: Option<(String, String)>, // the search on screen, as ("column contains", text), shown as a chip
 }
 
 impl App {
     fn open_path(&mut self, p: PathBuf) {
         let t0 = Instant::now();
         match open(p) {
-            Ok(t) => { self.t = Some(Arc::new(t)); self.opened_ms = t0.elapsed().as_secs_f64() * 1e3; self.err.clear(); self.col = None; self.schema_info = None; self.sort_state = None; if let Some(j) = self.job.take() { j.cancel.store(true, Relaxed); } self.rerun_search = false; self.ibuild = None; self.exact.clear(); self.ebuild = None; self.sql_dir = None; self.idx = self.t.as_deref().and_then(load_idx).map(Arc::new); self.clear(); }
+            Ok(t) => { self.t = Some(Arc::new(t)); self.opened_ms = t0.elapsed().as_secs_f64() * 1e3; self.err.clear(); self.col = None; self.hidden.clear(); self.schema_info = None; self.sort_state = None; if let Some(j) = self.job.take() { j.cancel.store(true, Relaxed); } self.rerun_search = false; self.ibuild = None; self.exact.clear(); self.ebuild = None; self.sql_dir = None; self.idx = self.t.as_deref().and_then(load_idx).map(Arc::new); self.clear(); }
             Err(e) => self.err = format!("Cannot open: {e}"),
         }
     }
@@ -149,7 +157,7 @@ impl App {
     fn do_export(&mut self, ctx: &egui::Context) {
         let cols: Vec<usize> = self.exp_sel.iter().enumerate().filter(|(_, &on)| on).map(|(i, _)| i).collect();
         if cols.is_empty() { self.note = "Select at least one column to export".into(); return; }
-        if self.sql_view.is_none() && self.view.is_none() { self.note = "Nothing to export: run a search, sort or SQL query first".into(); return; }
+        if self.sql_view.is_none() && self.t.is_none() { self.note = "Open a file first".into(); return; }
         if self.job.is_some() { self.note = "A task is already running: wait for it or press Cancel".into(); return; }
         let fmt = self.exp_fmt;
         let Some(path) = rfd::FileDialog::new().add_filter(fmt.ext(), &[fmt.ext()]).set_file_name(format!("export.{}", fmt.ext())).save_file() else { return };
@@ -174,12 +182,17 @@ impl App {
             self.note = m;
             return;
         }
-        let (Some(t), Some(ids)) = (self.t.clone(), self.view.clone()) else { return };
-        self.note = format!("exporting {} rows…", ids.len());
+        let Some(t) = self.t.clone() else { return };
+        let ids = self.view.clone(); // None = no search: export the whole file
+        self.note = format!("exporting {} rows…", thousands(ids.as_ref().map_or(t.total(), |v| v.len() as u64)));
         let Some(job) = self.start_job("Exporting", 1, ctx) else { return };
         let (tx, rx) = channel();
         let (j2, c2) = (job.clone(), ctx.clone());
-        std::thread::spawn(move || { let _ = tx.send(export_ids(&t, &ids, &path, fmt, &cols, &j2).map_err(|e| e.to_string())); c2.request_repaint(); });
+        std::thread::spawn(move || {
+            let r = match &ids { Some(ids) => export_ids(&t, ids, &path, fmt, &cols, &j2), None => export_all(&t, &path, fmt, &cols, &j2) };
+            let _ = tx.send(r.map_err(|e| e.to_string()));
+            c2.request_repaint();
+        });
         self.exp_rx = Some((rx, job));
     }
     fn run_sql_query(&mut self, ctx: &egui::Context) {
@@ -201,6 +214,7 @@ impl App {
     }
     fn clear(&mut self) {
         self.top = 0;
+        self.applied = None;
         self.note.clear();
         self.drop_sorting();
         self.sql_view = None;
@@ -213,6 +227,7 @@ impl App {
     fn search(&mut self, ctx: &egui::Context) {
         let Some(t) = self.t.clone() else { return };
         if self.q.is_empty() { return; }
+        self.applied = Some((format!("{} {}", self.col.map_or("any column".to_string(), |c| t.names[c].clone()), if self.equals { "equals" } else { "contains" }), self.q.clone()));
         self.note.clear();
         self.drop_sorting();
         self.sql_view = None;
@@ -335,6 +350,7 @@ impl eframe::App for App {
         self.pump();
         // a column picked in a previous file can be out of range for the table that is open now
         if let (Some(c), Some(t)) = (self.col, &self.t) { if c >= t.names.len() { self.col = None; } }
+        if let Some(t) = &self.t { if self.hidden.len() != t.names.len() { self.hidden = vec![false; t.names.len()]; } }
         if self.rerun_search && self.ebuild.is_none() { self.rerun_search = false; self.search(ctx); } // exact index finished loading
         let n = self.count();
         let (dy, pg) = ctx.input(|i| (i.smooth_scroll_delta.y, i.key_pressed(egui::Key::PageDown) as i64 - i.key_pressed(egui::Key::PageUp) as i64));
@@ -360,44 +376,81 @@ impl eframe::App for App {
         if kb_free && home { self.top = 0; }
         if kb_free && end { self.top = max; }
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Open…").clicked() {
-                    if let Some(p) = rfd::FileDialog::new().add_filter("parquet", &["parquet", "pq"]).pick_file() { self.open_path(p); }
-                }
-                if ui.button("Open folder…").clicked() {
-                    if let Some(p) = rfd::FileDialog::new().pick_folder() { self.open_path(p); } // every .parquet/.pq inside, as one table
-                }
-                if ui.button("Export…").clicked() { self.exp_open = !self.exp_open; }
-                if ui.button("Schema").clicked() { self.schema_open = !self.schema_open; }
-                if ui.button("Default app…").clicked() { self.assoc_open = !self.assoc_open; }
-                if ui.button("SQL").clicked() {
-                    self.sql_open = !self.sql_open;
-                    if self.sql_text.is_empty() { self.sql_text = "SELECT * FROM data LIMIT 1000".into(); }
-                }
-                if let Some(t) = self.t.clone() {
-                    let r = ui.add(egui::TextEdit::singleline(&mut self.q).hint_text("search…").desired_width(220.0));
-                    egui::ComboBox::from_id_salt("col")
-                        .selected_text(self.col.map(|c| t.names[c].clone()).unwrap_or("All columns".into()))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.col, None, "All columns");
-                            for (i, n) in t.names.iter().enumerate() { ui.selectable_value(&mut self.col, Some(i), n); }
-                        });
-                    ui.checkbox(&mut self.equals, "equals");
-                    if ui.button("Search").clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) { self.search(ctx); }
-                    if ui.button("Cancel").clicked() {
-                        if let Some(s) = &self.scan { s.cancel.store(true, Relaxed); }
-                        if let Some(j) = &self.job { j.cancel.store(true, Relaxed); }
+            ui.add_space(4.0);
+            let running = self.job.is_some() || self.scan.as_ref().map_or(false, |s| s.done.is_none());
+            ui.horizontal(|ui| {
+                match self.t.clone() {
+                    Some(t) => {
+                        ui.heading(t.path.file_name().map_or(String::new(), |n| n.to_string_lossy().to_string()));
+                        let files = if t.files.len() > 1 { format!("{} files · ", t.files.len()) } else { String::new() };
+                        ui.label(egui::RichText::new(format!("{}{} rows · {} columns · {} row groups", files, thousands(t.total()), t.names.len(), t.num_rgs())).color(MUTED));
                     }
-                    if ui.button("Clear").clicked() { self.q.clear(); self.clear(); }
-                    if self.idx.is_none() && self.ibuild.is_none() && ui.button("Build text index").clicked() { self.build_index(ctx); }
-                    if let Some(c) = self.col {
-                        if !self.exact.contains_key(&c) && self.ebuild.is_none() && !exact_path(&t, c).exists()
-                            && ui.button(format!("Build exact index ({})", t.names[c])).clicked() { self.build_exact_index(c, ctx); }
+                    None => {
+                        ui.heading("Parquet Viewer");
                     }
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(egui::Button::new(egui::RichText::new("Export…").color(ON_ACCENT)).fill(ACCENT)).clicked() { self.exp_open = !self.exp_open; }
+                    if ui.button("SQL").clicked() {
+                        self.sql_open = !self.sql_open;
+                        if self.sql_text.is_empty() { self.sql_text = "SELECT * FROM data LIMIT 1000".into(); }
+                    }
+                    if ui.button("Schema").clicked() { self.schema_open = !self.schema_open; }
+                    if ui.button("Open folder…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().pick_folder() { self.open_path(p); } // every .parquet/.pq inside, as one table
+                    }
+                    if ui.button("Open…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().add_filter("parquet", &["parquet", "pq"]).pick_file() { self.open_path(p); }
+                    }
+                    if ui.button("Default app…").clicked() { self.assoc_open = !self.assoc_open; }
+                });
             });
+            if let Some(t) = self.t.clone() {
+                ui.add_space(6.0);
+                egui::Frame::none().fill(PANEL).stroke(egui::Stroke::new(1.0, LINE)).rounding(egui::Rounding::same(12.0)).inner_margin(egui::Margin::symmetric(12.0, 8.0)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        let hint = match self.col { Some(c) => format!("Search {}", t.names[c]), None => "Search all columns".to_string() };
+                        let r = ui.add(egui::TextEdit::singleline(&mut self.q).hint_text(hint).desired_width(240.0));
+                        egui::ComboBox::from_id_salt("col")
+                            .selected_text(self.col.map(|c| t.names[c].clone()).unwrap_or("All columns".into()))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.col, None, "All columns");
+                                for (i, n) in t.names.iter().enumerate() { ui.selectable_value(&mut self.col, Some(i), n); }
+                            });
+                        egui::ComboBox::from_id_salt("mode")
+                            .selected_text(if self.equals { "Equals" } else { "Contains" })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.equals, false, "Contains");
+                                ui.selectable_value(&mut self.equals, true, "Equals");
+                            });
+                        if ui.add(egui::Button::new(egui::RichText::new("Search").color(ON_ACCENT)).fill(ACCENT)).clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) { self.search(ctx); }
+                        if ui.add_enabled(running, egui::Button::new("Cancel")).clicked() {
+                            if let Some(s) = &self.scan { s.cancel.store(true, Relaxed); }
+                            if let Some(j) = &self.job { j.cancel.store(true, Relaxed); }
+                        }
+                        if let Some((l, v)) = self.applied.clone() {
+                            if widgets::chip(ui, &l, &v) { self.q.clear(); self.clear(); }
+                        } else if self.view.is_some() || self.sql_view.is_some() {
+                            if ui.button("Clear").clicked() { self.q.clear(); self.clear(); }
+                        }
+                        let shown = self.hidden.iter().filter(|&&h| !h).count();
+                        if ui.button(format!("Columns: {} of {}", shown, self.hidden.len())).clicked() { self.cols_open = !self.cols_open; }
+                        if self.idx.is_none() && self.ibuild.is_none() && ui.button("Build text index").clicked() { self.build_index(ctx); }
+                        if let Some(c) = self.col {
+                            if !self.exact.contains_key(&c) && self.ebuild.is_none() && !exact_path(&t, c).exists()
+                                && ui.button(format!("Build exact index ({})", t.names[c])).clicked() { self.build_exact_index(c, ctx); }
+                        }
+                    });
+                });
+            }
+            if !self.err.is_empty() {
+                ui.add_space(6.0);
+                let body = self.err.trim_start_matches("Cannot open: ").to_string();
+                if widgets::message_box(ui, widgets::Severity::Error, "The file was not opened", &body, &["Dismiss"]).is_some() { self.err.clear(); }
+            }
             let status = match (&self.t, &self.scan) {
-                (None, _) => if self.err.is_empty() { "Open or drop a .parquet file".to_string() } else { self.err.clone() },
+                (None, _) => String::new(),
                 (Some(_), None) if !self.note.is_empty() => self.note.clone(),
                 (Some(t), None) => format!("{} · {}{} rows · {} row groups · {} cols · footer read in {:.1} ms",
                     t.path.file_name().map_or(String::new(), |n| n.to_string_lossy().to_string()), if t.files.len() > 1 { format!("{} files · ", t.files.len()) } else { String::new() }, t.total(), t.num_rgs(), t.names.len(), self.opened_ms),
@@ -409,58 +462,79 @@ impl eframe::App for App {
             let nrg = self.t.as_ref().map_or(0, |t| t.num_rgs());
             let isfx = match (&self.idx, &self.ibuild) {
                 (Some(i), _) => format!(" · text index ready ({} string cols)", i.cols.len()),
-                (None, Some(_)) => String::new(), // shown in the progress bar
-                _ => String::new(),
+                _ => String::new(), // a running build is shown in the progress card
             };
             let dsfx = match (self.col, &self.t) {
                 (Some(c), Some(t)) => format!(" · selected col fully dictionary-encoded in {}/{} row groups", (0..nrg).filter(|&g| pure_dict(t.rg_meta(g).column(c))).count(), nrg),
                 _ => String::new(),
             };
             let esfx = match (&self.ebuild, self.exact.len()) {
-                (Some(_), _) => String::new(), // shown in the progress bar
-                (None, 0) => String::new(),
-                (None, k) => format!(" · exact index on {k} col(s)"),
+                (None, k) if k > 0 => format!(" · exact index on {k} col(s)"),
+                _ => String::new(),
             };
-            ui.label(status + &isfx + &esfx + &dsfx);
-            let scan_run = self.scan.as_ref().filter(|s| s.done.is_none()).map(|s| s.scanned.load(Relaxed) + s.skipped.load(Relaxed));
-            if self.job.is_some() || scan_run.is_some() {
-                ui.horizontal(|ui| {
-                    if let Some(j) = self.job.clone() {
-                        let ind = j.indeterminate.load(Relaxed);
-                        let txt = if ind { j.label() } else { format!("{}  {}/{}", j.label(), j.done.load(Relaxed), j.total.load(Relaxed)) };
-                        ui.add(egui::ProgressBar::new(if ind { 1.0 } else { j.frac() }).animate(ind).desired_width(420.0).text(txt));
-                        if ui.button("Cancel task").clicked() { j.cancel.store(true, Relaxed); }
-                    } else if let Some(d) = scan_run {
-                        ui.add(egui::ProgressBar::new(d as f32 / nrg.max(1) as f32).desired_width(320.0).text(format!("Searching  {d}/{nrg} row groups")));
-                        if ui.button("Cancel search").clicked() { if let Some(s) = &self.scan { s.cancel.store(true, Relaxed); } }
-                    }
-                });
+            let short = match (&self.t, &self.scan) {
+                (None, _) => String::new(),
+                (Some(_), None) => self.note.clone(),
+                (Some(_), Some(s)) => format!("{} matches · {} · {} of {} row groups read, {} skipped",
+                    thousands(self.view.as_ref().map_or(0, |v| v.len()) as u64),
+                    match s.done { Some(d) if d >= 1.0 => format!("{:.1} s", d), Some(d) => format!("{:.0} ms", d * 1e3), None => "searching…".into() },
+                    s.scanned.load(Relaxed), nrg, s.skipped.load(Relaxed)),
+            };
+            let line = short + &isfx + &esfx;
+            let line = line.trim_start_matches(" · ").to_string();
+            if !line.is_empty() {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(line).color(MUTED)).on_hover_text(status + &dsfx);
             }
-        });
-        if self.sql_open {
-            egui::TopBottomPanel::bottom("sql").resizable(true).min_height(100.0).show(ctx, |ui| {
-                let src = self.sql_dir.as_ref().or_else(|| self.t.as_ref().map(|t| &t.path)).map(|p| p.display().to_string()).unwrap_or("(nothing open)".into());
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(format!("SQL — table `data` = {src}"));
-                    if ui.button("Run").clicked() { self.run_sql_query(ctx); }
-                    if self.sql_dir.is_some() && ui.button("Use open file").clicked() { self.sql_dir = None; }
-                    ui.label(self.sql_msg.clone());
-                });
-                ui.add(egui::TextEdit::multiline(&mut self.sql_text).code_editor().desired_rows(4).desired_width(f32::INFINITY));
-            });
-        }
-        egui::SidePanel::right("sb").exact_width(26.0).show(ctx, |ui| {
-            let h = ui.available_height();
-            let vis = (((h - 50.0) / 20.0).floor().max(1.0)) as u64; // header + horizontal scroll bar
-            if vis != self.vis { self.vis = vis; ctx.request_repaint(); }
-            let max = n.saturating_sub(self.vis);
-            if max > 0 {
-                let mut v = (max - self.top.min(max)) as f64; // inverted: top of slider = first row
-                ui.spacing_mut().slider_width = (h - 10.0).max(20.0);
-                if ui.add(egui::Slider::new(&mut v, 0.0..=max as f64).vertical().show_value(false)).changed() {
-                    self.top = max - (v.round() as u64).min(max);
+            let scan_run = self.scan.as_ref().filter(|s| s.done.is_none()).map(|s| s.scanned.load(Relaxed) + s.skipped.load(Relaxed));
+            if let Some(j) = self.job.clone() {
+                ui.add_space(6.0);
+                let ind = j.indeterminate.load(Relaxed);
+                let detail = if ind { String::new() } else { format!("{} of {}", j.done.load(Relaxed), j.total.load(Relaxed)) };
+                if widgets::progress_card(ui, &j.label(), if ind { None } else { Some(j.frac()) }, &detail) { j.cancel.store(true, Relaxed); }
+            } else if let Some(d) = scan_run {
+                ui.add_space(6.0);
+                let found = self.view.as_ref().map_or(0, |v| v.len()) as u64;
+                if widgets::progress_card(ui, &format!("Searching row group {d} of {nrg}"), Some(d as f32 / nrg.max(1) as f32), &format!("{} matches so far", thousands(found))) {
+                    if let Some(s) = &self.scan { s.cancel.store(true, Relaxed); }
                 }
             }
+            ui.add_space(4.0);
+        });
+        if self.sql_open {
+            egui::TopBottomPanel::bottom("sql").resizable(true).min_height(130.0).show(ctx, |ui| {
+                let src = self.sql_dir.as_ref().or_else(|| self.t.as_ref().map(|t| &t.path))
+                    .map(|p| p.file_name().map_or(p.display().to_string(), |n| n.to_string_lossy().to_string())).unwrap_or("nothing open".into());
+                let running = self.sql_rx.is_some();
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("SQL").strong());
+                    ui.label(egui::RichText::new(format!("The table is called data and reads {src}")).color(MUTED));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add_enabled(!running, egui::Button::new(egui::RichText::new("Run query").color(ON_ACCENT)).fill(ACCENT)).clicked() { self.run_sql_query(ctx); }
+                        if self.sql_dir.is_some() && ui.button("Use open file").clicked() { self.sql_dir = None; }
+                    });
+                });
+                ui.add(egui::TextEdit::multiline(&mut self.sql_text).code_editor().desired_rows(5).desired_width(f32::INFINITY).hint_text("SELECT * FROM data LIMIT 1000"));
+                let m = self.sql_msg.clone();
+                if !m.is_empty() {
+                    ui.add_space(4.0);
+                    if m.starts_with("SQL error") || m.starts_with("could not") || m.starts_with("Open a file") {
+                        let body = m.strip_prefix("SQL error: ").unwrap_or(&m);
+                        widgets::message_box(ui, widgets::Severity::Error, "The query did not run", body, &[]);
+                    } else {
+                        ui.label(egui::RichText::new(m).color(MUTED));
+                    }
+                }
+                ui.add_space(4.0);
+            });
+        }
+        egui::SidePanel::right("sb").exact_width(16.0).show(ctx, |ui| {
+            let h = ui.available_height();
+            let vis = (((h - (HEAD_H + 28.0)) / ROW_H).floor().max(1.0)) as u64; // header + horizontal scroll bar
+            if vis != self.vis { self.vis = vis; ctx.request_repaint(); }
+            let max = n.saturating_sub(self.vis);
+            if let Some(t) = super::widgets::scrollbar(ui, self.top, max, self.vis) { self.top = t; }
         });
         if self.exp_open {
             let names: Vec<String> = match &self.sql_view {
@@ -468,28 +542,50 @@ impl eframe::App for App {
                 None => self.t.as_ref().map(|t| t.names.clone()).unwrap_or_default(),
             };
             if self.exp_sel.len() != names.len() { self.exp_sel = vec![true; names.len()]; }
-            let (mut open, mut go) = (true, false);
-            egui::Window::new("Export current results").open(&mut open).collapsible(false).show(ctx, |ui| {
+            let rows = self.count();
+            let nothing = self.sql_view.is_none() && self.t.is_none();
+            let whole = self.sql_view.is_none() && self.view.is_none();
+            let (mut open, mut go, mut cancel) = (true, false, false);
+            egui::Window::new("Export results").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+                ui.set_width(440.0);
+                if nothing {
+                    widgets::message_box(ui, widgets::Severity::Warning, "No file is open", "Open a Parquet file or folder first.", &[]);
+                    ui.add_space(8.0);
+                }
+                ui.label(egui::RichText::new("Format").strong());
                 ui.horizontal(|ui| {
-                    ui.label("Format:");
-                    ui.radio_value(&mut self.exp_fmt, ExportFmt::Csv, "CSV");
-                    ui.radio_value(&mut self.exp_fmt, ExportFmt::Txt, "TXT (colon-separated)");
-                    ui.radio_value(&mut self.exp_fmt, ExportFmt::Json, "JSON");
+                    ui.selectable_value(&mut self.exp_fmt, ExportFmt::Csv, "CSV");
+                    ui.selectable_value(&mut self.exp_fmt, ExportFmt::Txt, "TXT, colon separated");
+                    ui.selectable_value(&mut self.exp_fmt, ExportFmt::Json, "JSON");
                 });
+                ui.add_space(8.0);
+                let sel = self.exp_sel.iter().filter(|&&x| x).count();
                 ui.horizontal(|ui| {
-                    ui.label("Columns:");
-                    if ui.button("All").clicked() { self.exp_sel.iter_mut().for_each(|x| *x = true); }
-                    if ui.button("None").clicked() { self.exp_sel.iter_mut().for_each(|x| *x = false); }
+                    ui.label(egui::RichText::new("Columns").strong());
+                    ui.label(egui::RichText::new(format!("{} of {} selected", sel, names.len())).color(MUTED));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("None").clicked() { self.exp_sel.iter_mut().for_each(|x| *x = false); }
+                        if ui.button("All").clicked() { self.exp_sel.iter_mut().for_each(|x| *x = true); }
+                    });
                 });
-                egui::ScrollArea::vertical().max_height(300.0).auto_shrink([false, true])
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible) // always show the bar, not only on hover
-                    .show(ui, |ui| {
-                    for (i, n) in names.iter().enumerate() { ui.checkbox(&mut self.exp_sel[i], n); }
+                egui::ScrollArea::vertical().max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
+                    egui::Grid::new("expcols").num_columns(2).spacing([24.0, 4.0]).show(ui, |ui| {
+                        for (i, n) in names.iter().enumerate() {
+                            ui.checkbox(&mut self.exp_sel[i], n);
+                            if i % 2 == 1 { ui.end_row(); }
+                        }
+                    });
                 });
-                ui.label("Exports every row of the current result (search, sort or SQL). A large SQL result is run again and streamed to the file.");
-                if ui.button("Export…").clicked() { go = true; }
+                ui.add_space(6.0);
+                let what = if whole { format!("Writes the whole file, {} rows. To export only some rows, search, sort or run an SQL query first.", thousands(rows)) } else { format!("Writes all {} rows of the current results. A large SQL result is run again and streamed to the file.", thousands(rows)) };
+                ui.label(egui::RichText::new(what).color(MUTED));
+                ui.add_space(8.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add_enabled(!nothing && sel > 0, egui::Button::new(egui::RichText::new("Export…").color(ON_ACCENT)).fill(ACCENT)).clicked() { go = true; }
+                    if ui.button("Cancel").clicked() { cancel = true; }
+                });
             });
-            self.exp_open = open;
+            self.exp_open = open && !cancel;
             if go { self.do_export(ctx); }
         }
         if self.assoc_open {
@@ -547,6 +643,26 @@ impl eframe::App for App {
             });
             self.schema_open = open;
         }
+        if self.cols_open {
+            let mut open = true;
+            if let Some(t) = self.t.clone() {
+                egui::Window::new("Columns").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::RIGHT_TOP, [-28.0, 160.0]).show(ctx, |ui| {
+                    ui.set_min_width(260.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Show all").clicked() { self.hidden.iter_mut().for_each(|h| *h = false); }
+                        if ui.button("Hide all").clicked() { self.hidden.iter_mut().for_each(|h| *h = true); }
+                    });
+                    egui::ScrollArea::vertical().max_height(360.0).auto_shrink([false, true]).show(ui, |ui| {
+                        for (i, n) in t.names.iter().enumerate() {
+                            let mut on = !self.hidden[i];
+                            if ui.checkbox(&mut on, n).changed() { self.hidden[i] = !on; }
+                        }
+                    });
+                    ui.label(egui::RichText::new("Hidden columns are still searched and exported.").color(MUTED));
+                });
+            }
+            self.cols_open = open;
+        }
         egui::CentralPanel::default().show(ctx, |ui| {
             self.table_rect = Some(ui.max_rect());
             if let Some(res) = &self.sql_view {
@@ -555,15 +671,38 @@ impl eframe::App for App {
                 let out = egui::ScrollArea::horizontal().auto_shrink([false, false]).horizontal_scroll_offset(self.hx).show(ui, |ui| {
                 TableBuilder::new(ui).striped(true).resizable(true).vscroll(false)
                     .columns(Column::initial(140.0).at_least(40.0).clip(true), res.cols.len().max(1))
-                    .header(22.0, |mut h| { for c in &res.cols { h.col(|ui| { ui.strong(c); }); } })
-                    .body(|body| body.rows(20.0, vn as usize, |mut row| {
+                    .header(HEAD_H, |mut h| { for c in &res.cols { h.col(|ui| { ui.strong(c); }); } })
+                    .body(|body| body.rows(ROW_H, vn as usize, |mut row| {
                         if let Some(r) = res.rows.get((top + row.index() as u64) as usize) { for c in r { row.col(|ui| { cell_label(ui, c); }); } }
                     }));
                 });
                 self.hx = out.state.offset.x;
                 return;
             }
-            let Some(t) = self.t.clone() else { return };
+            let Some(t) = self.t.clone() else {
+                ui.vertical_centered(|ui| {
+                    ui.add_space((ui.available_height() * 0.25).max(16.0));
+                    let w = (ui.available_width() - 120.0).clamp(200.0, 440.0);
+                    egui::Frame::none().stroke(egui::Stroke::new(2.0, LINE)).rounding(egui::Rounding::same(16.0)).inner_margin(egui::Margin::symmetric(40.0, 32.0)).show(ui, |ui| {
+                        ui.set_width(w);
+                        ui.vertical_centered(|ui| {
+                            ui.label(egui::RichText::new("Open a Parquet file or folder").size(22.0).family(super::theme::bold()));
+                            ui.add_space(6.0);
+                            ui.label(egui::RichText::new("Drop it on this window, or choose it below. A folder opens as one table when every file has the same columns.").color(MUTED));
+                            ui.add_space(14.0);
+                            ui.allocate_ui_with_layout(egui::vec2(w, 32.0), egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center), |ui| {
+                                if ui.add(egui::Button::new(egui::RichText::new("Open file").color(ON_ACCENT)).fill(ACCENT)).clicked() {
+                                    if let Some(p) = rfd::FileDialog::new().add_filter("parquet", &["parquet", "pq"]).pick_file() { self.open_path(p); }
+                                }
+                                if ui.button("Open folder").clicked() {
+                                    if let Some(p) = rfd::FileDialog::new().pick_folder() { self.open_path(p); }
+                                }
+                            });
+                        });
+                    });
+                });
+                return;
+            };
             let n = self.count();
             let vn = self.vis.min(n);
             let top = self.top.min(n.saturating_sub(vn)); // vis may have grown since `top` was clamped
@@ -571,27 +710,39 @@ impl eframe::App for App {
             let (cache, view) = (&self.cache, &self.view);
             let ss = self.sort_state;
             let mut clicked: Option<usize> = None;
+            let hidden = self.hidden.clone();
+            let nvis = hidden.iter().filter(|&&h| !h).count();
+            if nvis == 0 { ui.label(egui::RichText::new("All columns are hidden. Use Columns to show some.").color(MUTED)); return; }
+            let types: Vec<String> = (0..t.names.len()).map(|i| t.schema().fields().get(i).map_or(String::new(), |f| type_name(f.data_type()))).collect();
             let out = egui::ScrollArea::horizontal().auto_shrink([false, false]).horizontal_scroll_offset(self.hx).show(ui, |ui| {
             TableBuilder::new(ui).striped(true).resizable(true).vscroll(false)
-                .columns(Column::initial(140.0).at_least(40.0).clip(true), t.names.len())
-                .header(22.0, |mut h| {
+                .columns(Column::initial(140.0).at_least(40.0).clip(true), nvis)
+                .header(HEAD_H, |mut h| {
                     for (ci, n) in t.names.iter().enumerate() {
+                        if hidden[ci] { continue; }
                         h.col(|ui| {
-                            let mark = match ss { Some((c, d)) if c == ci => if d { " v" } else { " ^" }, _ => "" };
-                            let b = egui::Button::new(egui::RichText::new(format!("{n}{mark}")).strong()).frame(false);
-                            if ui.add(b).on_hover_text("Click to sort: top 1000 (click again to reverse)").clicked() { clicked = Some(ci); }
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                let mark = match ss { Some((c, d)) if c == ci => if d { " ↓" } else { " ↑" }, _ => "" };
+                                let b = egui::Button::new(egui::RichText::new(format!("{n}{mark}")).strong()).frame(false);
+                                if ui.add(b).on_hover_text("Click to sort: top 1000 (click again to reverse)").clicked() { clicked = Some(ci); }
+                                ui.label(egui::RichText::new(&types[ci]).size(11.0).color(MUTED));
+                            });
                         });
                     }
                 })
-                .body(|body| body.rows(20.0, vn as usize, |mut row| {
+                .body(|body| body.rows(ROW_H, vn as usize, |mut row| {
                     let i = top + row.index() as u64;
                     if i >= n { return; }
                     let id = match view.as_ref() { Some(v) => match v.get(i as usize) { Some(&x) => x, None => return }, None => i };
                     let (g, local) = t.locate(id);
                     let key = (g, local / BLOCK);
                     match cache.get(&key).and_then(|b| b.get((local % BLOCK) as usize)) {
-                        Some(r) => for c in r { row.col(|ui| { cell_label(ui, c); }); },
-                        None => { need.push(key); for _ in 0..t.names.len() { row.col(|ui| { ui.weak("…"); }); } }
+                        Some(r) => for (ci, c) in r.iter().enumerate() {
+                            if hidden.get(ci).copied().unwrap_or(false) { continue; }
+                            row.col(|ui| { cell_label(ui, c); });
+                        },
+                        None => { need.push(key); for _ in 0..nvis { row.col(|ui| { ui.weak("…"); }); } }
                     }
                 }));
             });
@@ -621,7 +772,10 @@ pub(crate) fn run() -> eframe::Result {
         viewport: egui::ViewportBuilder::default().with_icon(icon).with_inner_size([1280.0, 760.0]).with_min_inner_size([640.0, 400.0]),
         ..Default::default()
     };
-    eframe::run_native("Parquet Viewer", options, Box::new(|_| Ok(Box::new(app))))
+    eframe::run_native("Parquet Viewer", options, Box::new(|cc| {
+        super::theme::apply(&cc.egui_ctx);
+        Ok(Box::new(app))
+    }))
 }
 
 /// A table cell: right-click -> Copy.
@@ -633,4 +787,23 @@ fn cell_label(ui: &mut egui::Ui, text: &str) {
             ui.close_menu();
         }
     });
+}
+
+/// 1234567 -> "1,234,567".
+fn thousands(n: u64) -> String {
+    let s = n.to_string();
+    let mut o = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 { o.push(','); }
+        o.push(c);
+    }
+    o
+}
+
+/// Short column type for the table header: "Utf8" -> "String", "Timestamp(Millisecond, None)" -> "Timestamp".
+fn type_name(dt: &DataType) -> String {
+    match dt {
+        DataType::Utf8 | DataType::LargeUtf8 => "String".to_string(),
+        _ => dt.to_string().split('(').next().unwrap_or("").to_string(),
+    }
 }
