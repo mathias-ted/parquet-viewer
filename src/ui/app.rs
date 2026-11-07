@@ -390,19 +390,19 @@ impl eframe::App for App {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(egui::Button::new(egui::RichText::new("Export…").color(ON_ACCENT)).fill(ACCENT)).clicked() { self.exp_open = !self.exp_open; }
-                    if ui.button("SQL").clicked() {
+                    if ui.add(egui::Button::new(egui::RichText::new("Export…").color(ON_ACCENT)).fill(ACCENT)).on_hover_text("Write the current results, or the whole file, as CSV, TXT or JSON").clicked() { self.exp_open = !self.exp_open; }
+                    if ui.button("SQL").on_hover_text("Query the open file or folder with SQL").clicked() {
                         self.sql_open = !self.sql_open;
                         if self.sql_text.is_empty() { self.sql_text = "SELECT * FROM data LIMIT 1000".into(); }
                     }
-                    if ui.button("Schema").clicked() { self.schema_open = !self.schema_open; }
-                    if ui.button("Open folder…").clicked() {
+                    if ui.button("Schema").on_hover_text("Show columns, types, compression and value ranges").clicked() { self.schema_open = !self.schema_open; }
+                    if ui.button("Open folder…").on_hover_text("Open every Parquet file in a folder, including subfolders, as one table").clicked() {
                         if let Some(p) = rfd::FileDialog::new().pick_folder() { self.open_path(p); } // every .parquet/.pq inside, as one table
                     }
-                    if ui.button("Open…").clicked() {
+                    if ui.button("Open…").on_hover_text("Open a Parquet file").clicked() {
                         if let Some(p) = rfd::FileDialog::new().add_filter("parquet", &["parquet", "pq"]).pick_file() { self.open_path(p); }
                     }
-                    if ui.button("Default app…").clicked() { self.assoc_open = !self.assoc_open; }
+                    if ui.button("Default app…").on_hover_text("Add Parquet Viewer to the Open with list and open the Windows default apps settings").clicked() { self.assoc_open = !self.assoc_open; }
                 });
             });
             if let Some(t) = self.t.clone() {
@@ -411,35 +411,35 @@ impl eframe::App for App {
                     ui.set_width(ui.available_width());
                     ui.horizontal_wrapped(|ui| {
                         let hint = match self.col { Some(c) => format!("Search {}", t.names[c]), None => "Search all columns".to_string() };
-                        let r = ui.add(egui::TextEdit::singleline(&mut self.q).hint_text(hint).desired_width(240.0));
+                        let r = ui.add(egui::TextEdit::singleline(&mut self.q).hint_text(hint).desired_width(240.0)).on_hover_text("Text to search for. Press Enter to run the search.");
                         egui::ComboBox::from_id_salt("col")
                             .selected_text(self.col.map(|c| t.names[c].clone()).unwrap_or("All columns".into()))
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(&mut self.col, None, "All columns");
                                 for (i, n) in t.names.iter().enumerate() { ui.selectable_value(&mut self.col, Some(i), n); }
-                            });
+                            }).response.on_hover_text("Search one column, or all of them");
                         egui::ComboBox::from_id_salt("mode")
                             .selected_text(if self.equals { "Equals" } else { "Contains" })
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(&mut self.equals, false, "Contains");
                                 ui.selectable_value(&mut self.equals, true, "Equals");
-                            });
-                        if ui.add(egui::Button::new(egui::RichText::new("Search").color(ON_ACCENT)).fill(ACCENT)).clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) { self.search(ctx); }
-                        if ui.add_enabled(running, egui::Button::new("Cancel")).clicked() {
+                            }).response.on_hover_text("Contains matches part of a value, ignoring case. Equals matches the whole value exactly. On number columns you can also type a range such as 5..10 or >100.");
+                        if ui.add(egui::Button::new(egui::RichText::new("Search").color(ON_ACCENT)).fill(ACCENT)).on_hover_text("Run the search. You can also press Enter.").clicked() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) { self.search(ctx); }
+                        if ui.add_enabled(running, egui::Button::new("Cancel")).on_hover_text("Stop the running task").on_disabled_hover_text("Nothing is running").clicked() {
                             if let Some(s) = &self.scan { s.cancel.store(true, Relaxed); }
                             if let Some(j) = &self.job { j.cancel.store(true, Relaxed); }
                         }
                         if let Some((l, v)) = self.applied.clone() {
                             if widgets::chip(ui, &l, &v) { self.q.clear(); self.clear(); }
                         } else if self.view.is_some() || self.sql_view.is_some() {
-                            if ui.button("Clear").clicked() { self.q.clear(); self.clear(); }
+                            if ui.button("Clear").on_hover_text("Remove the results and show the whole file again").clicked() { self.q.clear(); self.clear(); }
                         }
                         let shown = self.hidden.iter().filter(|&&h| !h).count();
-                        if ui.button(format!("Columns: {} of {}", shown, self.hidden.len())).clicked() { self.cols_open = !self.cols_open; }
-                        if self.idx.is_none() && self.ibuild.is_none() && ui.button("Build text index").clicked() { self.build_index(ctx); }
+                        if ui.button(format!("Columns: {} of {}", shown, self.hidden.len())).on_hover_text("Show or hide columns in the table. Hidden columns are still searched and exported.").clicked() { self.cols_open = !self.cols_open; }
+                        if self.idx.is_none() && self.ibuild.is_none() && ui.button("Build text index").on_hover_text("Build a reusable index that speeds up text searches when the word is uncommon").clicked() { self.build_index(ctx); }
                         if let Some(c) = self.col {
                             if !self.exact.contains_key(&c) && self.ebuild.is_none() && !exact_path(&t, c).exists()
-                                && ui.button(format!("Build exact index ({})", t.names[c])).clicked() { self.build_exact_index(c, ctx); }
+                                && ui.button(format!("Build exact index ({})", t.names[c])).on_hover_text(format!("Build a reusable index so Equals lookups on {} take milliseconds. Needs about 16 bytes of free memory per row.", t.names[c])).clicked() { self.build_exact_index(c, ctx); }
                         }
                     });
                 });
@@ -511,8 +511,8 @@ impl eframe::App for App {
                     ui.label(egui::RichText::new("SQL").strong());
                     ui.label(egui::RichText::new(format!("The table is called data and reads {src}")).color(MUTED));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add_enabled(!running, egui::Button::new(egui::RichText::new("Run query").color(ON_ACCENT)).fill(ACCENT)).clicked() { self.run_sql_query(ctx); }
-                        if self.sql_dir.is_some() && ui.button("Use open file").clicked() { self.sql_dir = None; }
+                        if ui.add_enabled(!running, egui::Button::new(egui::RichText::new("Run query").color(ON_ACCENT)).fill(ACCENT)).on_hover_text("Run the query. The table is called data.").on_disabled_hover_text("A query is already running").clicked() { self.run_sql_query(ctx); }
+                        if self.sql_dir.is_some() && ui.button("Use open file").on_hover_text("Use the open file or folder as the table data").clicked() { self.sql_dir = None; }
                     });
                 });
                 ui.add(egui::TextEdit::multiline(&mut self.sql_text).code_editor().desired_rows(5).desired_width(f32::INFINITY).hint_text("SELECT * FROM data LIMIT 1000"));
@@ -554,9 +554,9 @@ impl eframe::App for App {
                 }
                 ui.label(egui::RichText::new("Format").strong());
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.exp_fmt, ExportFmt::Csv, "CSV");
-                    ui.selectable_value(&mut self.exp_fmt, ExportFmt::Txt, "TXT, colon separated");
-                    ui.selectable_value(&mut self.exp_fmt, ExportFmt::Json, "JSON");
+                    ui.selectable_value(&mut self.exp_fmt, ExportFmt::Csv, "CSV").on_hover_text("Comma-separated, quoted where needed");
+                    ui.selectable_value(&mut self.exp_fmt, ExportFmt::Txt, "TXT, colon separated").on_hover_text("Values separated by colons. A value that contains a colon is quoted.");
+                    ui.selectable_value(&mut self.exp_fmt, ExportFmt::Json, "JSON").on_hover_text("A list of records, all values as text");
                 });
                 ui.add_space(8.0);
                 let sel = self.exp_sel.iter().filter(|&&x| x).count();
@@ -564,8 +564,8 @@ impl eframe::App for App {
                     ui.label(egui::RichText::new("Columns").strong());
                     ui.label(egui::RichText::new(format!("{} of {} selected", sel, names.len())).color(MUTED));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("None").clicked() { self.exp_sel.iter_mut().for_each(|x| *x = false); }
-                        if ui.button("All").clicked() { self.exp_sel.iter_mut().for_each(|x| *x = true); }
+                        if ui.button("None").on_hover_text("Deselect every column").clicked() { self.exp_sel.iter_mut().for_each(|x| *x = false); }
+                        if ui.button("All").on_hover_text("Select every column").clicked() { self.exp_sel.iter_mut().for_each(|x| *x = true); }
                     });
                 });
                 egui::ScrollArea::vertical().max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
@@ -581,8 +581,8 @@ impl eframe::App for App {
                 ui.label(egui::RichText::new(what).color(MUTED));
                 ui.add_space(8.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled(!nothing && sel > 0, egui::Button::new(egui::RichText::new("Export…").color(ON_ACCENT)).fill(ACCENT)).clicked() { go = true; }
-                    if ui.button("Cancel").clicked() { cancel = true; }
+                    if ui.add_enabled(!nothing && sel > 0, egui::Button::new(egui::RichText::new("Export…").color(ON_ACCENT)).fill(ACCENT)).on_hover_text("Choose where to save the file").on_disabled_hover_text(if nothing { "Open a file first" } else { "Select at least one column" }).clicked() { go = true; }
+                    if ui.button("Cancel").on_hover_text("Close without exporting").clicked() { cancel = true; }
                 });
             });
             self.exp_open = open && !cancel;
@@ -593,13 +593,13 @@ impl eframe::App for App {
             egui::Window::new("Open Parquet files with this app").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
                 ui.label("Adds Parquet Viewer to the \"Open with\" list for .parquet and .pq files, then opens the Windows\nDefault apps settings. Windows asks you to choose the default yourself.");
                 ui.horizontal(|ui| {
-                    if ui.button("Add and open Windows settings").clicked() {
+                    if ui.button("Add and open Windows settings").on_hover_text("Add the program to the Open with list, then open Windows settings to choose the default").clicked() {
                         self.assoc_msg = match crate::ui::assoc::register() {
                             Ok(()) => { crate::ui::assoc::open_default_apps_settings(); "Added. In the Windows settings, choose Parquet Viewer for .parquet and .pq.".to_string() }
                             Err(e) => format!("Could not add: {e}"),
                         };
                     }
-                    if ui.button("Remove").clicked() {
+                    if ui.button("Remove").on_hover_text("Remove Parquet Viewer from the Open with list").clicked() {
                         self.assoc_msg = match crate::ui::assoc::unregister() { Ok(()) => "Removed from the Open with list.".to_string(), Err(e) => format!("Could not remove: {e}") };
                     }
                 });
@@ -649,8 +649,8 @@ impl eframe::App for App {
                 egui::Window::new("Columns").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::RIGHT_TOP, [-28.0, 160.0]).show(ctx, |ui| {
                     ui.set_min_width(260.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Show all").clicked() { self.hidden.iter_mut().for_each(|h| *h = false); }
-                        if ui.button("Hide all").clicked() { self.hidden.iter_mut().for_each(|h| *h = true); }
+                        if ui.button("Show all").on_hover_text("Show every column in the table").clicked() { self.hidden.iter_mut().for_each(|h| *h = false); }
+                        if ui.button("Hide all").on_hover_text("Hide every column from the table").clicked() { self.hidden.iter_mut().for_each(|h| *h = true); }
                     });
                     egui::ScrollArea::vertical().max_height(360.0).auto_shrink([false, true]).show(ui, |ui| {
                         for (i, n) in t.names.iter().enumerate() {
@@ -691,10 +691,10 @@ impl eframe::App for App {
                             ui.label(egui::RichText::new("Drop it on this window, or choose it below. A folder opens as one table when every file has the same columns.").color(MUTED));
                             ui.add_space(14.0);
                             ui.allocate_ui_with_layout(egui::vec2(w, 32.0), egui::Layout::left_to_right(egui::Align::Center).with_main_align(egui::Align::Center), |ui| {
-                                if ui.add(egui::Button::new(egui::RichText::new("Open file").color(ON_ACCENT)).fill(ACCENT)).clicked() {
+                                if ui.add(egui::Button::new(egui::RichText::new("Open file").color(ON_ACCENT)).fill(ACCENT)).on_hover_text("Open a Parquet file").clicked() {
                                     if let Some(p) = rfd::FileDialog::new().add_filter("parquet", &["parquet", "pq"]).pick_file() { self.open_path(p); }
                                 }
-                                if ui.button("Open folder").clicked() {
+                                if ui.button("Open folder").on_hover_text("Open every Parquet file in a folder, including subfolders, as one table").clicked() {
                                     if let Some(p) = rfd::FileDialog::new().pick_folder() { self.open_path(p); }
                                 }
                             });
