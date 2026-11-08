@@ -5,6 +5,8 @@
 A fast desktop viewer and search tool for very large Parquet files, or whole folders of them.
 One native program that runs locally and needs no installer and no runtime.
 
+<p align="center"><img src="assets/screenshots/demo.gif" alt="Searching a file of one million rows: the search runs, the results appear and the search is shown as a chip" width="900"></p>
+
 ## Features
 
 - **Instant open.** Only the file footers are read, so even a folder with hundreds of millions of rows opens in well under a second.
@@ -19,6 +21,23 @@ One native program that runs locally and needs no installer and no runtime.
 - **Double-click to open (Windows).** The **Default app...** button adds the program to the Open with list for `.parquet` and `.pq` files and opens the Windows settings where it can be chosen as the default.
 - **Export and convert.** CSV, TXT or JSON, with the selected columns. With no search active the whole file is written, so it also converts Parquet to other formats. Search, sort and SQL results export in full, with no row limit.
 - **Safe on big data.** Long tasks show progress and can be cancelled. Index builds check free memory first.
+
+## Screenshots
+
+<p align="center"><img src="assets/screenshots/main.png" alt="A file of one million rows and 20 columns, open in the table view" width="900"><br><sub>Open a file or folder and browse it right away.</sub></p>
+
+<table>
+<tr>
+<td width="50%"><img src="assets/screenshots/columns.png" alt="The Columns window with a checkbox for every column"><br><sub>Show or hide columns. Hidden columns are still searched and exported.</sub></td>
+<td width="50%"><img src="assets/screenshots/export.png" alt="The Export window with the format choice and the column list"><br><sub>Export the whole file, or only the current results, as CSV, TXT or JSON.</sub></td>
+</tr>
+<tr>
+<td width="50%"><img src="assets/screenshots/schema.png" alt="The Schema window listing column types, compression, encodings and value ranges"><br><sub>Schema: types, compression, encodings and value ranges.</sub></td>
+<td width="50%"><img src="assets/screenshots/sql.png" alt="The SQL panel with a query under the table"><br><sub>Query the open file or folder with SQL.</sub></td>
+</tr>
+</table>
+
+The screenshots use generated sample data. `examples/sample.rs` creates the same kind of file: `cargo run --release --example sample -- sample.parquet 1000000`.
 
 ## Install
 
@@ -145,7 +164,8 @@ src/
     theme.rs        colours, spacing and the bundled font
     widgets.rs      filter chip, message box, progress card, scrollbar
     assoc.rs        Open with / default app registration (Windows)
-assets/           icon, fonts (DM Sans)
+assets/           icon, fonts (DM Sans), screenshots
+examples/         test-data generators (gen.rs, sample.rs)
 ```
 
 ## Contributing
