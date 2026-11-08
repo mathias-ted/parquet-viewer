@@ -155,7 +155,7 @@ impl App {
         self.sorting = Some((rx, Instant::now(), c, desc, base, job));
     }
     fn do_export(&mut self, ctx: &egui::Context) {
-        let cols: Vec<usize> = self.exp_sel.iter().enumerate().filter(|(_, &on)| on).map(|(i, _)| i).collect();
+        let cols: Vec<usize> = self.exp_sel.iter().enumerate().filter(|&(_, &on)| on).map(|(i, _)| i).collect();
         if cols.is_empty() { self.note = "Select at least one column to export".into(); return; }
         if self.sql_view.is_none() && self.t.is_none() { self.note = "Open a file first".into(); return; }
         if self.job.is_some() { self.note = "A task is already running: wait for it or press Cancel".into(); return; }
