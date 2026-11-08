@@ -115,3 +115,12 @@ fn compression_names_are_shortened() {
     assert_eq!(short("ZSTD(ZstdLevel(1))".to_string()), "ZSTD");
     assert_eq!(short("SNAPPY".to_string()), "SNAPPY");
 }
+
+#[test]
+fn open_errors_get_a_hint_only_for_reader_errors() {
+    use crate::ui::app::open_error_text;
+    assert!(open_error_text("Parquet error: bad data").contains("newer Parquet library"));
+    assert!(!open_error_text("no .parquet or .pq files found in that folder").contains("newer"));
+    assert!(!open_error_text("schema of a.parquet differs from b.parquet").contains("newer"));
+    assert!(!open_error_text("x.parquet: Access is denied. (os error 5)").contains("newer"));
+}

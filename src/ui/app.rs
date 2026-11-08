@@ -60,7 +60,7 @@ impl App {
         let t0 = Instant::now();
         match open(p) {
             Ok(t) => { self.t = Some(Arc::new(t)); self.opened_ms = t0.elapsed().as_secs_f64() * 1e3; self.err.clear(); self.col = None; self.hidden.clear(); self.schema_info = None; self.sort_state = None; if let Some(j) = self.job.take() { j.cancel.store(true, Relaxed); } self.rerun_search = false; self.ibuild = None; self.exact.clear(); self.ebuild = None; self.sql_dir = None; self.idx = self.t.as_deref().and_then(load_idx).map(Arc::new); self.clear(); }
-            Err(e) => self.err = format!("Cannot open: {e}"),
+            Err(e) => self.err = open_error_text(&e.to_string()),
         }
     }
     /// Reserve the single background-task slot. None (with a note) if a task is already running.
@@ -806,4 +806,12 @@ fn type_name(dt: &DataType) -> String {
         DataType::Utf8 | DataType::LargeUtf8 => "String".to_string(),
         _ => dt.to_string().split('(').next().unwrap_or("").to_string(),
     }
+}
+
+/// Message for a file or folder that could not be opened. Errors from the Parquet reader get a hint, because a
+/// file written by a newer Parquet library can use a feature this version cannot read.
+pub(crate) fn open_error_text(e: &str) -> String {
+    let ours = e.contains("schema of ") || e.contains("no .parquet or .pq files") || e.contains("os error");
+    if ours { return format!("Cannot open: {e}"); }
+    format!("Cannot open: {e}\n\nIf the file is complete, it may use a feature this version cannot read, for example one added by a newer Parquet library. A newer version of the viewer may open it. If the copy was interrupted, copy the file again.")
 }
