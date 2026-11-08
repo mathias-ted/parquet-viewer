@@ -62,7 +62,7 @@ pub(crate) fn schema_info(t: &Table) -> SchemaInfo {
             let c = t.rg_meta(0).column(i);
             physical = format!("{:?}", c.column_type());
             compression = short(format!("{:?}", c.compression()));
-            let mut enc: Vec<String> = c.encodings().iter().map(|e| format!("{e:?}")).collect();
+            let mut enc: Vec<String> = c.encodings().map(|e| format!("{e:?}")).collect();
             enc.sort();
             enc.dedup();
             encodings = enc.join(", ");

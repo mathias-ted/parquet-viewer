@@ -1,7 +1,7 @@
 //! Open a file, or a folder of Parquet files, as one table: footers, row-group offsets, block loading.
 //! Row groups are numbered globally across files; `rg_file` maps a global row group to (file, local index).
 use crate::prelude::*;
-
+use parquet::file::metadata::PageIndexPolicy;
 pub(crate) type Res<T> = Result<T, Box<dyn std::error::Error>>;
 
 pub(crate) const BLOCK: u64 = 2048; // rows decoded per load; bigger = fewer loads while scrolling
@@ -59,7 +59,7 @@ pub(crate) fn open(path: PathBuf) -> Res<Table> {
     if paths.is_empty() { return Err("no .parquet or .pq files found in that folder".into()); }
     let files = paths.par_iter().map(|p| -> Result<FileInfo, String> { // footers only, read in parallel
         let f = File::open(p).map_err(|e| format!("{}: {e}", p.display()))?;
-        let arm = ArrowReaderMetadata::load(&f, ArrowReaderOptions::new().with_page_index(true)).map_err(|e| format!("{}: {e}", p.display()))?;
+        let arm = ArrowReaderMetadata::load(&f, ArrowReaderOptions::new().with_page_index_policy(PageIndexPolicy::Optional)).map_err(|e| format!("{}: {e}", p.display()))?;
         Ok(FileInfo { path: p.clone(), arm })
     }).collect::<Result<Vec<_>, String>>()?;
     for f in &files[1..] {
