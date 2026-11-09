@@ -30,25 +30,39 @@ fn runtime() -> Result<tokio::runtime::Runtime, String> {
 }
 
 /// Runs the query and keeps up to SQL_MAX_ROWS rows for display (`truncated` = there were more).
-pub(crate) fn run_sql(path: PathBuf, sql: String) -> Result<SqlResult, String> {
+/// Setting `cancel` stops it: the query runs as its own task, and Cancel drops that task, which stops the reading.
+pub(crate) fn run_sql(path: PathBuf, sql: String, cancel: Arc<AtomicBool>) -> Result<SqlResult, String> {
+    let rt = runtime()?;
+    let task = rt.spawn(query(path, sql));
+    loop {
+        if cancel.load(Relaxed) {
+            task.abort();
+            rt.shutdown_background(); // do not wait for work that is being dropped
+            return Err("cancelled".to_string());
+        }
+        if task.is_finished() { break; }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    rt.block_on(task).map_err(|e| e.to_string())?
+}
+
+async fn query(path: PathBuf, sql: String) -> Result<SqlResult, String> {
     use datafusion::arrow::util::display::{ArrayFormatter as Fmt, FormatOptions as FOpts};
     let t0 = Instant::now();
-    runtime()?.block_on(async {
-        let ctx = session(&path).await?;
-        let df = ctx.sql(&sql).await.map_err(|e| e.to_string())?;
-        let cols: Vec<String> = df.schema().fields().iter().map(|f| f.name().clone()).collect();
-        let df = df.limit(0, Some(SQL_MAX_ROWS + 1)).map_err(|e| e.to_string())?;
-        let batches = df.collect().await.map_err(|e| e.to_string())?;
-        let fo = FOpts::default().with_null("null");
-        let mut rows: Vec<Vec<String>> = vec![];
-        for b in &batches {
-            let f: Vec<_> = b.columns().iter().map(|c| Fmt::try_new(c.as_ref(), &fo)).collect::<Result<_, _>>().map_err(|e| e.to_string())?;
-            for i in 0..b.num_rows() { rows.push(f.iter().map(|x| x.value(i).to_string()).collect()); }
-        }
-        let truncated = rows.len() > SQL_MAX_ROWS;
-        rows.truncate(SQL_MAX_ROWS);
-        Ok(SqlResult { cols, rows, ms: t0.elapsed().as_secs_f64() * 1e3, truncated })
-    })
+    let ctx = session(&path).await?;
+    let df = ctx.sql(&sql).await.map_err(|e| e.to_string())?;
+    let cols: Vec<String> = df.schema().fields().iter().map(|f| f.name().clone()).collect();
+    let df = df.limit(0, Some(SQL_MAX_ROWS + 1)).map_err(|e| e.to_string())?;
+    let batches = df.collect().await.map_err(|e| e.to_string())?;
+    let fo = FOpts::default().with_null("null");
+    let mut rows: Vec<Vec<String>> = vec![];
+    for b in &batches {
+        let f: Vec<_> = b.columns().iter().map(|c| Fmt::try_new(c.as_ref(), &fo)).collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+        for i in 0..b.num_rows() { rows.push(f.iter().map(|x| x.value(i).to_string()).collect()); }
+    }
+    let truncated = rows.len() > SQL_MAX_ROWS;
+    rows.truncate(SQL_MAX_ROWS);
+    Ok(SqlResult { cols, rows, ms: t0.elapsed().as_secs_f64() * 1e3, truncated })
 }
 
 /// Runs the query again and streams EVERY result row to a file: no row limit, memory stays bounded.

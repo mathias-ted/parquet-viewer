@@ -124,3 +124,10 @@ fn open_errors_get_a_hint_only_for_reader_errors() {
     assert!(!open_error_text("schema of a.parquet differs from b.parquet").contains("newer"));
     assert!(!open_error_text("x.parquet: Access is denied. (os error 5)").contains("newer"));
 }
+
+#[test]
+fn a_cancelled_sql_query_stops_with_a_cancelled_error() {
+    let cancel = Arc::new(AtomicBool::new(true));
+    let r = run_sql(PathBuf::from("nothing.parquet"), "SELECT 1".into(), cancel);
+    assert_eq!(r.err().as_deref(), Some("cancelled"));
+}

@@ -32,6 +32,7 @@ struct App {
     sql_text: String,
     sql_dir: Option<PathBuf>,
     sql_rx: Option<Receiver<Result<SqlResult, String>>>,
+    sql_cancel: Option<Arc<AtomicBool>>, // set to stop the running query
     sql_view: Option<SqlResult>,
     sql_msg: String,
     exp_rx: Option<(Receiver<Result<usize, String>>, Arc<Job>)>,
@@ -201,9 +202,11 @@ impl App {
         self.sql_inflight = Some((path.clone(), sql.clone()));
         let (tx, rx) = channel();
         let c2 = ctx.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.sql_cancel = Some(cancel.clone());
         // A big stack: the SQL engine plans queries with deep recursion, and Rust's default 2 MB thread stack can overflow.
         let started = std::thread::Builder::new().name("sql".into()).stack_size(64 * 1024 * 1024)
-            .spawn(move || { let _ = tx.send(run_sql(path, sql)); c2.request_repaint(); });
+            .spawn(move || { let _ = tx.send(run_sql(path, sql, cancel)); c2.request_repaint(); });
         if let Err(e) = started { self.sql_msg = format!("could not start the query: {e}"); return; }
         self.sql_rx = Some(rx);
         self.sql_msg = "running…".into();
@@ -284,6 +287,7 @@ impl App {
         }
         if let Some(r) = self.sql_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.sql_rx = None;
+            self.sql_cancel = None;
             match r {
                 Ok(res) => {
                     self.sql_ran = self.sql_inflight.take();
@@ -291,6 +295,7 @@ impl App {
                     self.top = 0;
                     self.sql_view = Some(res);
                 }
+                Err(e) if e == "cancelled" => { self.sql_msg = "Query cancelled".into(); }
                 Err(e) => {
                     let hint = if e.contains("Resources exhausted") { " (the query needs more memory than is available: add a WHERE or a LIMIT, or close other programs)" } else { "" };
                     self.sql_msg = format!("SQL error: {e}{hint}");
@@ -377,7 +382,7 @@ impl eframe::App for App {
         if kb_free && end { self.top = max; }
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.add_space(4.0);
-            let running = self.job.is_some() || self.scan.as_ref().map_or(false, |s| s.done.is_none());
+            let running = self.job.is_some() || self.sql_rx.is_some() || self.scan.as_ref().map_or(false, |s| s.done.is_none());
             ui.horizontal(|ui| {
                 match self.t.clone() {
                     Some(t) => {
@@ -428,6 +433,7 @@ impl eframe::App for App {
                         if ui.add_enabled(running, egui::Button::new("Cancel")).on_hover_text("Stop the running task").on_disabled_hover_text("Nothing is running").clicked() {
                             if let Some(s) = &self.scan { s.cancel.store(true, Relaxed); }
                             if let Some(j) = &self.job { j.cancel.store(true, Relaxed); }
+                            if let Some(c) = &self.sql_cancel { c.store(true, Relaxed); self.sql_msg = "Cancelling…".into(); }
                         }
                         if let Some((l, v)) = self.applied.clone() {
                             if widgets::chip(ui, &l, &v) { self.q.clear(); self.clear(); }
@@ -512,6 +518,10 @@ impl eframe::App for App {
                     ui.label(egui::RichText::new(format!("The table is called data and reads {src}")).color(MUTED));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.add_enabled(!running, egui::Button::new(egui::RichText::new("Run query").color(ON_ACCENT)).fill(ACCENT)).on_hover_text("Run the query. The table is called data.").on_disabled_hover_text("A query is already running").clicked() { self.run_sql_query(ctx); }
+                        if ui.add_enabled(running, egui::Button::new("Cancel")).on_hover_text("Stop the running query").on_disabled_hover_text("No query is running").clicked() {
+                            if let Some(c) = &self.sql_cancel { c.store(true, Relaxed); }
+                            self.sql_msg = "Cancelling…".into();
+                        }
                         if self.sql_dir.is_some() && ui.button("Use open file").on_hover_text("Use the open file or folder as the table data").clicked() { self.sql_dir = None; }
                     });
                 });
