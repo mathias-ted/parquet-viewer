@@ -229,8 +229,9 @@ impl App {
     }
     fn search(&mut self, ctx: &egui::Context) {
         let Some(t) = self.t.clone() else { return };
-        if self.q.is_empty() { return; }
-        self.applied = Some((format!("{} {}", self.col.map_or("any column".to_string(), |c| t.names[c].clone()), if self.equals { "equals" } else { "contains" }), self.q.clone()));
+        let q = effective_query(&self.q); // trimmed; "quoted" = literal; the box itself keeps what was typed
+        if q.is_empty() { return; }
+        self.applied = Some((format!("{} {}", self.col.map_or("any column".to_string(), |c| t.names[c].clone()), if self.equals { "equals" } else { "contains" }), q.clone()));
         self.note.clear();
         self.drop_sorting();
         self.sql_view = None;
@@ -243,7 +244,7 @@ impl App {
                 if let Some(ix) = ix { // exact index: binary search, no file reads
                     if let Some(s) = &self.scan { s.cancel.store(true, Relaxed); }
                     let t0 = Instant::now();
-                    let hits = exact_lookup(&ix, &self.q);
+                    let hits = exact_lookup(&ix, &q);
                     self.note = format!("{} matches via exact index in {:.2} ms", hits.len(), t0.elapsed().as_secs_f64() * 1e3);
                     self.top = 0; self.scan = None; self.view = Some(hits);
                     return;
@@ -253,11 +254,11 @@ impl App {
         if let Some(s) = &self.scan { s.cancel.store(true, Relaxed); }
         let cols = self.col.map(|c| vec![c]).unwrap_or_else(|| (0..t.names.len()).collect());
         let range = if self.equals { None } else {
-            self.col.filter(|&c| t.flat && is_numeric(t.schema().field(c).data_type())).and_then(|_| parse_range(&self.q))
+            self.col.filter(|&c| t.flat && is_numeric(t.schema().field(c).data_type())).and_then(|_| parse_range(&q))
         };
         self.top = 0;
         self.view = Some(vec![]);
-        self.scan = Some(start_scan(&t, cols, self.q.clone(), self.equals, range, self.idx.clone(), ctx.clone()));
+        self.scan = Some(start_scan(&t, cols, q, self.equals, range, self.idx.clone(), ctx.clone()));
     }
     fn pump(&mut self) {
         if let Some(s) = &mut self.scan {
@@ -824,4 +825,37 @@ pub(crate) fn open_error_text(e: &str) -> String {
     let ours = e.contains("schema of ") || e.contains("no .parquet or .pq files") || e.contains("os error");
     if ours { return format!("Cannot open: {e}"); }
     format!("Cannot open: {e}\n\nIf the file is complete, it may use a feature this version cannot read, for example one added by a newer Parquet library. A newer version of the viewer may open it. If the copy was interrupted, copy the file again.")
+}
+
+/// The text the search actually looks for, from what is in the search box:
+/// - leading and trailing whitespace (spaces, tabs, a pasted newline) is ignored;
+/// - text wrapped in double quotes is searched exactly, spaces inside the quotes included;
+/// - a box holding only spaces searches for those spaces;
+/// - spaces in the middle are always kept.
+fn effective_query(raw: &str) -> String {
+    let t = raw.trim();
+    if t.is_empty() { return raw.to_string(); }
+    if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') { return t[1..t.len() - 1].to_string(); }
+    t.to_string()
+}
+
+#[cfg(test)]
+mod query_tests {
+    use super::effective_query;
+    #[test]
+    fn trims_edges_keeps_middle() {
+        assert_eq!(effective_query("poyt "), "poyt");
+        assert_eq!(effective_query("  john smith\n"), "john smith");
+    }
+    #[test]
+    fn quotes_are_literal() {
+        assert_eq!(effective_query("\"poyt \""), "poyt ");
+        assert_eq!(effective_query("\" a b \""), " a b ");
+        assert_eq!(effective_query("\"\""), "");
+    }
+    #[test]
+    fn only_spaces_search_for_spaces() {
+        assert_eq!(effective_query("  "), "  ");
+        assert_eq!(effective_query(""), "");
+    }
 }
