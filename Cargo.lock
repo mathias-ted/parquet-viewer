@@ -3957,7 +3957,7 @@ dependencies = [
 
 [[package]]
 name = "parquet-viewer"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aho-corasick",
  "arrow",
