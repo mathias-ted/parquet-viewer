@@ -1,0 +1,54 @@
+name: Release
+
+# A pushed version tag builds the shareable program and publishes it with the
+# release. The tests run here as well, so a failing test stops the release.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --release
+
+      - name: Build the shareable program (no console window)
+        run: cargo build --release --features hide-console
+
+      - name: Report the size and the checksum
+        shell: pwsh
+        run: |
+          $exe = "target/release/parquet-viewer.exe"
+          $size = (Get-Item $exe).Length
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          Write-Output ("Size: {0:N0} bytes ({1:N1} MB)" -f $size, ($size / 1MB))
+          Write-Output "SHA256: $hash"
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" target/release/parquet-viewer.exe --clobber
+          else
+            gh release create "$tag" target/release/parquet-viewer.exe \
+              --title "Parquet Viewer $version" \
+              --notes-file RELEASE_NOTES.md \
+              --latest
+          fi

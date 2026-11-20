@@ -1,16 +1,10 @@
-# Parquet Viewer 0.1.2
+# Parquet Viewer 0.1.3
 
 A fast desktop viewer and search tool for very large Parquet files, or whole folders of them.
 
-## What's new since 0.1.1
+## What's new since 0.1.2
 
-- **Cancel a SQL query.** A running query now runs as its own task, so Cancel stops it. The SQL panel has its own Cancel button, and the top Cancel button stops queries too.
-- **Tooltips.** Every button and control explains what it does on hover, including what a disabled button is waiting for.
-- **Search box tidiness.** Leading and trailing whitespace in the search box is ignored, so a stray space or a pasted newline no longer breaks a search. Text in double quotes is searched exactly, spaces inside the quotes included.
-- **Clearer errors for unreadable files.** When the Parquet reader rejects a file, the message says it may use a feature this version cannot read, for example one added by a newer Parquet library, instead of only reporting a parse failure.
-- **Newer Parquet libraries.** Arrow, Parquet and DataFusion are updated to current versions, and the source moved to the 2024 Rust edition. Files written by newer writers are more likely to open.
-- **Sharper icon.** The program icon is rebuilt at higher resolution, so it stays clean at small sizes in Explorer and on the taskbar.
-- **Better README.** Screenshots and an animated demo, plus `examples/sample.rs`, which generates a million-row sample file for trying the program out.
+- **A much smaller download.** The program is 68 MB instead of 112 MB, with the same features and the same Parquet, Arrow and SQL libraries. Nothing was removed from what the program can do: the build no longer carries duplicated data tables, and it leaves out a decompression path for CSV and JSON that this program never reads.
 
 ## Download
 

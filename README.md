@@ -139,6 +139,10 @@ Use `--release`: a debug build is 10 to 50 times slower.
 The last command produces the program to share: `target/release/parquet-viewer.exe` (Windows) or `target/release/parquet-viewer`.
 Without `--features hide-console`, the program keeps a console window so crash messages are visible.
 
+`--release` uses fat LTO, so linking takes a long time on a slow machine. For everyday work use
+`cargo build --profile dev-fast` (or `cargo run --profile dev-fast`): the same optimisation, but it compiles much faster.
+Release the program with `--release` only.
+
 Debug switches (environment variables): `PQV_NODICT=1` turns off the dictionary read hint, and `PQV_NOEXACT=1` ignores the exact index.
 
 ### Project structure
